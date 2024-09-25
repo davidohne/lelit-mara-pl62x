@@ -1,0 +1,175 @@
+substitutions:
+  name: esphome-web-55e00b
+  friendly_name: mara
+  esp_name: mara
+  esp_hostname: esp-mara
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2024.6.0
+  name_add_mac_suffix: false
+  project:
+    name: esphome.web
+    version: dev
+
+esp8266:
+  board: esp01_1m
+
+logger:
+
+api:
+
+ota:
+- platform: esphome
+
+improv_serial:
+
+wifi:
+  ap: {}
+
+captive_portal:
+
+dashboard_import:
+  package_import_url: github://esphome/example-configs/esphome-web/esp8266.yaml@main
+  import_full_config: true
+
+web_server:
+
+time:
+  - platform: homeassistant
+    id: esptime
+
+globals:
+  - id: heating_flag
+    type: bool
+    initial_value: 'false'
+  - id: pump_flag
+    type: bool
+    initial_value: 'false'
+  - id: data_received
+    type: bool
+    initial_value: 'true'
+  - id: last_data_time
+    type: uint32_t
+    restore_value: no
+    
+# My Gicar Box returns: "+1.12,095,112,063,1095,1,0" and V for Steam Priority?! Don't know why...
+# If your Box returns C/S change accordingly
+
+uart:
+  baud_rate: 9600
+  tx_pin: GPIO15
+  rx_pin: GPIO13
+  id: UART2
+  debug:
+    direction: BOTH
+    dummy_receiver: true
+    after:
+      delimiter: "\r\n"
+    sequence:
+      - lambda: |-
+          UARTDebug::log_string(direction, bytes);
+          id(last_data_time) = millis();  
+          id(data_received) = true;       
+          char modeChar[1];                
+          float softwareVersion;
+          int boilerActual = 0;
+          int boilerTarget = 0;
+          int hxTemp = 0;
+          int countdown = 0;
+          int heating = 0;
+          int pump = 0;
+
+          std::string str(bytes.begin(), bytes.end());
+          if (sscanf(str.c_str(), "%1c%f,%d,%d,%d,%d,%d,%d", 
+                     modeChar, &softwareVersion, &boilerActual, &boilerTarget, 
+                     &hxTemp, &countdown, &heating, &pump) == 8 ) {
+
+            id(steam_actual).publish_state(boilerActual); 
+            id(steam_target).publish_state(boilerTarget);
+            id(heat_actual).publish_state(hxTemp);
+
+            id(heating_flag) = (heating == 1);
+            id(pump_flag) = (pump == 1);
+            
+
+            std::string mode = (modeChar[0] == '+') ? "Coffee Mode" : "Steam Mode";
+            id(opsType).publish_state(mode);
+            id(coffeeVersion).publish_state(String(softwareVersion).c_str());
+          }
+
+binary_sensor:
+  - platform: template
+    name: "Heating"
+    id: heating
+    lambda: 'return id(heating_flag);'
+
+  - platform: template
+    name: "Pump"
+    id: pump
+    lambda: 'return id(pump_flag);'
+
+sensor:
+  - platform: template
+    name: "Steam Actual"
+    id: "steam_actual"
+    state_class: measurement
+    unit_of_measurement: "°C"
+  - platform: template
+    name: "Steam Target"
+    id: "steam_target"
+    state_class: measurement
+    unit_of_measurement: "°C"
+  - platform: template
+    name: "Heatexchanger Actual"
+    id: "heat_actual"
+    state_class: measurement
+    unit_of_measurement: "°C"
+  - platform: uptime
+    name: ${esp_name} Uptime
+  - platform: wifi_signal
+    name: ${esp_name} WiFi Signal
+    update_interval: 60s
+
+text_sensor:
+  - platform: template
+    name: "Operation Mode"
+    id: "opsType"
+    filters:
+      - map:
+        - + -> Coffee priority
+        - V -> Steam priority
+        - X -> Offline
+  - platform: template
+    name: "Firmware Version"
+    id: "coffeeVersion"
+    
+  - platform: wifi_info
+    ip_address:
+      name: ${esp_name}
+    ssid:
+      name: ${esp_name}
+    bssid:
+      name: ${esp_name}
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (millis() - id(last_data_time) > 10000) {  
+            if (id(data_received)) {
+              id(data_received) = false;  
+              id(steam_actual).publish_state(0);
+              id(steam_target).publish_state(0);
+              id(heat_actual).publish_state(0);
+              id(heating).publish_state(false);  
+              id(pump).publish_state(false);     
+              id(opsType).publish_state("Offline");
+              id(coffeeVersion).publish_state("N/A");
+              
+              id(heating_flag) = false;
+              id(pump_flag) = false;
+            }
+          }
+
